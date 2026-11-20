@@ -5326,7 +5326,7 @@ function generarResumen(datosDetalle) {
   // (ya está en setFechas si vino del programa con unidades reales — no añadir artificialmente)
   // Filtrar sábados sin unidades: revisar si todos los grupos tienen hcTotalDia === 0 para ese iso
   // Primero construir el listado completo ordenado
-  const fechasOrdenadas = [...setFechas].sort();
+  const fechasOrdenadas = [...setFechas].sort((a, b) => /^SEMANA-/.test(a) && /^SEMANA-/.test(b) ? MOD8_SEMANAS.indexOf(mod8SemanaDesdeIso(a)) - MOD8_SEMANAS.indexOf(mod8SemanaDesdeIso(b)) : a.localeCompare(b));
 
   return {
     filas: [...mapaGrupos.values()],
@@ -7336,7 +7336,7 @@ function exportarExcel() {
 
   // Fechas únicas globales ordenadas
   const setFechas = new Set(srcExport.datosFinales.map(r => fechaISO(r.fecha)));
-  const fechas = [...setFechas].sort();
+  const fechas = [...setFechas].sort((a, b) => /^SEMANA-/.test(a) && /^SEMANA-/.test(b) ? MOD8_SEMANAS.indexOf(mod8SemanaDesdeIso(a)) - MOD8_SEMANAS.indexOf(mod8SemanaDesdeIso(b)) : a.localeCompare(b));
   const nFechas = fechas.length;
 
   // Pre-calcular HC por linea+día con un Map
@@ -8385,7 +8385,7 @@ function mod8ParseFecha(valor) {
   if (valor == null || valor === '') return null;
   if (valor instanceof Date && !isNaN(valor.getTime())) return valor;
   if (typeof valor === 'number' && valor > 20000 && valor < 80000) {
-    return new Date(Math.round((valor - 25569) * 86400 * 1000));
+    return new Date(1899, 11, 30 + Math.floor(valor));
   }
   const str = String(valor).trim();
   let m = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
@@ -8394,15 +8394,31 @@ function mod8ParseFecha(valor) {
     const d = new Date(y, Number(m[2])-1, Number(m[1]));
     return isNaN(d.getTime()) ? null : d;
   }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return new Date(str + 'T00:00:00');
   const d = new Date(str);
   return isNaN(d.getTime()) ? null : d;
 }
 function mod8ExcelWeekNum(fecha) {
-  const d = new Date(fecha.getFullYear(), fecha.getMonth(), fecha.getDate());
-  const jan1 = new Date(d.getFullYear(), 0, 1);
-  const dayOfYear = Math.floor((d - jan1) / 86400000) + 1;
-  const weekdayJan1Excel = jan1.getDay() + 1; // domingo=1, como NUM.DE.SEMANA(fecha)
-  return Math.floor((dayOfYear + weekdayJan1Excel - 2) / 7) + 1;
+  const jueves = new Date(Date.UTC(fecha.getFullYear(), fecha.getMonth(), fecha.getDate()));
+  jueves.setUTCDate(jueves.getUTCDate() + 4 - (jueves.getUTCDay() || 7));
+  const enero = Date.UTC(jueves.getUTCFullYear(), 0, 1);
+  return Math.ceil(((jueves.getTime() - enero) / 86400000 + 1) / 7);
+}
+function mod8HorizonteISO(cantidad = 8, base = new Date()) {
+  const lunes = new Date(base.getFullYear(), base.getMonth(), base.getDate());
+  lunes.setDate(lunes.getDate() + 8 - (lunes.getDay() || 7));
+  return Array.from({length: cantidad}, () => {
+    const semana = mod8ExcelWeekNum(lunes);
+    lunes.setDate(lunes.getDate() + 7);
+    return semana;
+  });
+}
+function mod8SemanaVisible(semana, filtro) {
+  const numeros = String(filtro).match(/\d+/g) || [];
+  if (!numeros.length) return true;
+  const [inicio, fin] = numeros.map(Number);
+  if (fin === undefined) return semana === inicio;
+  return inicio <= fin ? semana >= inicio && semana <= fin : semana >= inicio || semana <= fin;
 }
 function mod8FormatearFecha(d) {
   if (!d || isNaN(d.getTime())) return '';
@@ -8491,18 +8507,18 @@ function mod8ConfigurarSemanasDetectadas(registrosBase) {
       item.minTime = item.minTime == null ? t : Math.min(item.minTime, t);
     }
   });
-  const semanaActual = mod8SemanaActualSistema();
+  const horizonte = mod8HorizonteISO();
   const inicioSiguiente = mod8InicioSiguienteSemanaSistema().getTime();
   const candidatas = [...semanasMap.values()]
     .filter(x => x.unidades > 0)
     .filter(x => {
       if (x.minTime != null && Number.isFinite(x.minTime)) return x.minTime >= inicioSiguiente;
-      return Number(x.semana) > semanaActual;
+      return horizonte.includes(Number(x.semana));
     })
-    .sort((a,b) => mod8KeyOrdenSemana(a) - mod8KeyOrdenSemana(b));
+    .sort((a,b) => a.minTime != null && b.minTime != null ? a.minTime - b.minTime : horizonte.indexOf(a.semana) - horizonte.indexOf(b.semana));
   const detectadas = candidatas.slice(0, 8).map(x => x.semana);
 
-  MOD8_SEMANAS = detectadas.length ? detectadas : Array.from({length: 8}, (_,i)=>semanaActual + i + 1);
+  MOD8_SEMANAS = detectadas.length ? detectadas : horizonte;
   const horasActual = Number(document.getElementById('horasTotalSemana')?.value || 44) || 44;
   mod8HorasSemana = new Map(MOD8_SEMANAS.map(s => [s, horasActual]));
   const filtro = document.getElementById('filtroFecha');
@@ -9302,7 +9318,7 @@ aplicarFiltros = function() {
   src.datosFiltrados = src.datosFinales.filter(r => {
     if (semanaTxt) {
       const sem = mod8SemanaDesdeIso(r.fecha);
-      if (String(sem) !== semanaTxt.replace(/[^0-9]/g,'')) return false;
+      if (!mod8SemanaVisible(sem, semanaTxt)) return false;
     }
     if (lineasSeleccionadas.size > 0 && !lineasSeleccionadas.has(r.linea)) return false;
     if (estiloTxt && !String(r.estilo).toLowerCase().includes(estiloTxt)) return false;
