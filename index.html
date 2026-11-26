@@ -8556,6 +8556,7 @@ function mod8DetectarFilaEncabezadoDemanda(filas) {
     const hn = fila.map(c => norm(String(c == null ? '' : c)));
     const tiene = variantes => encontrarCol(hn, variantes) >= 0;
 
+    if (hn.includes('PROGRAMA') && hn.includes('TOTAL SETS') && tiene(['ESTILO','STYLE'])) return i;
     const tieneOrden   = tiene(['ORDEN','ORDER','ORDER CODE','OC']);
     const tieneProceso = tiene(['PROCESO','PROCESS','PROCESO SETS']);
     const tieneEstilo  = tiene(['ESTILO','STYLE','STYLE NUMBER','CODIGO ESTILO']);
@@ -8593,6 +8594,9 @@ procesarPrograma = function(workbook) {
   const indicesProceso = hn.map((h, i) => h === norm('PROCESO') ? i : -1).filter(i => i >= 0);
   if (indicesProceso.length > 1) iProceso = indicesProceso[1];
   const iLinea = encontrarCol(hn, ['ROW NAME','LINEA','LÍNEA','LINE']);
+  const iPrograma = hn.indexOf('PROGRAMA');
+  const iTotalSets = hn.indexOf('TOTAL SETS');
+  const usaProgramaSets = iPrograma >= 0 && iTotalSets >= 0;
   const iSemanaTxt = encontrarCol(hn, ['SEMANA','WEEK']);
   const iFecha = encontrarCol(hn, ['DATE ON PLAN DAY','PLAN DAY','FECHA PRODUCCION','FECHA PRODUCCIÓN','INICIO ATRAQUE','FECHA']);
   const iQty   = encontrarCol(hn, ['QUANTITY ON PLAN DAY','QTY ON PLAN DAY','CANTIDAD','QUANTITY','QTY']);
@@ -8608,11 +8612,18 @@ procesarPrograma = function(workbook) {
     if (!fila || fila.every(c => c === null || c === undefined || c === '')) continue;
 
     const d = mod8ParseFecha(iFecha >= 0 ? fila[iFecha] : null);
-    let semana = iSemanaTxt >= 0 ? mod8SemanaDesdeTexto(fila[iSemanaTxt]) : null;
-    if (!semana && d) semana = mod8ExcelWeekNum(d);
+    let semana;
+    if (usaProgramaSets) {
+      const etiqueta = String(fila[iPrograma] ?? '').trim();
+      const match = etiqueta.match(/(?:^|\b)(?:W(?:EEK|K)?|SEMANA)\s*(\d{1,2})$/i);
+      semana = match ? Number(match[1]) : mod8SemanaDesdeTexto(etiqueta);
+    } else {
+      semana = iSemanaTxt >= 0 ? mod8SemanaDesdeTexto(fila[iSemanaTxt]) : null;
+    }
+    if (!usaProgramaSets && !semana && d) semana = mod8ExcelWeekNum(d);
     if (!semana) { sinSemana++; continue; }
 
-    const unidades = iQty >= 0 ? celdaANumero(fila[iQty]) : 0;
+    const unidades = usaProgramaSets ? celdaANumero(fila[iTotalSets]) : (iQty >= 0 ? celdaANumero(fila[iQty]) : 0);
     if (!(unidades > 0)) { sinQty++; continue; }
 
     const proceso = String(iProceso >= 0 && fila[iProceso] != null ? fila[iProceso] : '').trim();
@@ -8625,7 +8636,7 @@ procesarPrograma = function(workbook) {
     base.push({ fila, semana, fechaReal: d, unidades, linea, orden, orderCode, estiloRaw });
   }
 
-  const semanasValidas = mod8ConfigurarSemanasDetectadas(base);
+  const semanasValidas = mod8ConfigurarSemanasDetectadas(usaProgramaSets ? [] : base);
   const mapa = new Map();
   let fueraSemana = 0;
 
